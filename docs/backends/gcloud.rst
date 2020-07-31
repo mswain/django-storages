@@ -82,6 +82,12 @@ Your Google Storage bucket name, as a string. Required.
 Your Google Cloud project ID. If unset, falls back to the default
 inferred from the environment.
 
+``GS_IS_GZIPPED`` (optional: default is ``False``)
+    Whether or not to enable gzipping of content types specified by ``GZIP_CONTENT_TYPES``
+
+``GZIP_CONTENT_TYPES`` (optional: default is ``text/css``, ``text/javascript``, ``application/javascript``, ``application/x-javascript``, ``image/svg+xml``, ``application/wasm``)
+    When ``GS_IS_GZIPPED`` is set to ``True`` the content types which will be gzipped
+
 ``GS_CREDENTIALS`` (optional)
 
 The OAuth 2 credentials to use for the connection. If unset, falls

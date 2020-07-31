@@ -1,12 +1,14 @@
+import io
 import mimetypes
 from datetime import timedelta
+from gzip import GzipFile
 from tempfile import SpooledTemporaryFile
 
 from django.core.exceptions import ImproperlyConfigured, SuspiciousOperation
 from django.core.files.base import File
 from django.utils import timezone
 from django.utils.deconstruct import deconstructible
-from django.utils.encoding import force_bytes
+from django.utils.encoding import force_bytes, smart_str
 
 from storages.base import BaseStorage
 from storages.utils import (
@@ -52,6 +54,8 @@ class GoogleCloudFile(File):
                 self._is_dirty = False
                 self.blob.download_to_file(self._file)
                 self._file.seek(0)
+            if self._storage.gzip and self.blob.content_encoding == 'gzip':
+                self._file = GzipFile(mode=self._mode, fileobj=self._file, mtime=0.0)
         return self._file
 
     def _set_file(self, value):
@@ -111,6 +115,15 @@ class GoogleCloudStorage(BaseStorage):
             # roll over.
             "max_memory_size": setting('GS_MAX_MEMORY_SIZE', 0),
             "blob_chunk_size": setting('GS_BLOB_CHUNK_SIZE'),
+            "gzip": setting('GS_IS_GZIPPED', False),
+            "gzip_content_types": setting('GZIP_CONTENT_TYPES', (
+                'application/javascript',
+                'application/x-javascript',
+                'image/svg+xml',
+                'text/css',
+                'text/javascript',
+            )),
+            "file_name_charset": setting('GS_FILE_NAME_CHARSET', 'utf-8'),
         }
 
     @property
@@ -141,6 +154,28 @@ class GoogleCloudStorage(BaseStorage):
             raise SuspiciousOperation("Attempted access to '%s' denied." %
                                       name)
 
+    def _encode_name(self, name):
+        return smart_str(name, encoding=self.file_name_charset)
+
+    def _compress_content(self, content):
+        """Gzip a given string content."""
+        content.seek(0)
+        zbuf = io.BytesIO()
+        #  The GZIP header has a modification time attribute (see http://www.zlib.org/rfc-gzip.html)
+        #  This means each time a file is compressed it changes even if the other contents don't change
+        #  For Google Storage this defeats detection of changes using MD5 sums on gzipped files
+        #  Fixing the mtime at 0.0 at compression time avoids this problem
+        zfile = GzipFile(mode='wb', fileobj=zbuf, mtime=0.0)
+        try:
+            zfile.write(force_bytes(content.read()))
+        finally:
+            zfile.close()
+        zbuf.seek(0)
+        # We set the file size
+        zbuf.size = len(zbuf.getvalue())
+        zbuf.seek(0)
+        return zbuf
+
     def _open(self, name, mode='rb'):
         name = self._normalize_name(clean_name(name))
         file_object = GoogleCloudFile(name, mode, self)
@@ -155,9 +190,13 @@ class GoogleCloudStorage(BaseStorage):
         content.name = cleaned_name
         file = GoogleCloudFile(name, 'rw', self)
         file.blob.cache_control = self.cache_control
+        content_type = file.mime_type
+        if self.gzip and content_type in self.gzip_content_types:
+            content = self._compress_content(content)
+            file.blob.content_encoding = 'gzip'
         file.blob.upload_from_file(
-            content, rewind=True, size=content.size,
-            content_type=file.mime_type, predefined_acl=self.default_acl)
+            content, rewind=True, size=getattr(content, 'size', None),
+            content_type=content_type, predefined_acl=self.default_acl)
         return cleaned_name
 
     def delete(self, name):
